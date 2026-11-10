@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Onyx WhatsApp PC — Panel de Control Gratuito</title>
+  <style>
+    :root {
+      --bg: #0f0f12;
+      --card: #18181d;
+      --card-hover: #1f1f26;
+      --line: #27272a;
+      --gold: #d4af37;
+      --gold-soft: rgba(212, 175, 55, 0.12);
+      --emerald: #10b981;
+      --emerald-soft: rgba(16, 185, 129, 0.14);
+      --red: #ef4444;
+      --text: #f4f4f5;
+      --muted: #a1a1aa;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.5;
+      padding: 24px 16px 60px;
+    }
+    .container { max-width: 1060px; margin: 0 auto; }
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 24px;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand-icon {
+      width: 44px; height: 44px;
+      border-radius: 12px;
+      background: var(--gold-soft);
+      border: 1px solid rgba(212, 175, 55, 0.35);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px;
+    }
+    h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
+    .subtitle { font-size: 13px; color: var(--muted); }
+    .header-actions { display: flex; align-items: center; gap: 10px; }
+    .badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 12px; border-radius: 999px;
+      font-size: 12px; font-weight: 600;
+      border: 1px solid var(--line);
+      background: var(--card);
+    }
+    .badge.connected { background: var(--emerald-soft); color: #34d399; border-color: rgba(16,185,129,0.35); }
+    .badge.qr { background: var(--gold-soft); color: var(--gold); border-color: rgba(212,175,55,0.35); }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+    @media (max-width: 820px) { .grid { grid-template-columns: 1fr; } }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 20px;
+    }
+    .card h2 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .card p.desc { font-size: 13px; color: var(--muted); margin-bottom: 16px; }
+    .qr-box {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: #121216;
+      border: 1px dashed rgba(212, 175, 55, 0.4);
+      border-radius: 16px;
+      padding: 20px;
+      text-align: center;
+    }
+    .qr-box img {
+      width: 240px;
+      height: 240px;
+      border-radius: 12px;
+      background: #fff;
+      padding: 8px;
+      margin-bottom: 12px;
+    }
+    .toggle-list { display: flex; flex-direction: column; gap: 10px; }
+    .toggle-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: #131317;
+      border: 1px solid var(--line);
+    }
+    .toggle-item strong { display: block; font-size: 13.5px; }
+    .toggle-item span { font-size: 12px; color: var(--muted); }
+    input[type="checkbox"] {
+      width: 18px; height: 18px;
+      accent-color: var(--gold);
+      cursor: pointer;
+    }
+    .input-row { display: flex; gap: 8px; margin-top: 10px; }
+    input[type="text"], input[type="tel"] {
+      flex: 1;
+      background: #121216;
+      border: 1px solid var(--line);
+      color: var(--text);
+      padding: 10px 12px;
+      border-radius: 10px;
+      font-size: 13.5px;
+      outline: none;
+    }
+    input[type="text"]:focus, input[type="tel"]:focus {
+      border-color: var(--gold);
+    }
+    button {
+      background: var(--gold);
+      color: #09090b;
+      border: none;
+      padding: 10px 16px;
+      border-radius: 10px;
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    button:hover { opacity: 0.9; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.secondary {
+      background: #23232b;
+      color: var(--text);
+      border: 1px solid var(--line);
+    }
+    button.danger {
+      background: rgba(239, 68, 68, 0.15);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+    .list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 360px;
+      overflow-y: auto;
+    }
+    .list-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 11px 13px;
+      border-radius: 12px;
+      background: #131317;
+      border: 1px solid var(--line);
+      font-size: 13px;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-weight: 600;
+      background: #27272a;
+      color: #d4d4d8;
+    }
+    .pill.sent { background: rgba(212, 175, 55, 0.16); color: var(--gold); }
+    .pill.delivered, .pill.read { background: var(--emerald-soft); color: #34d399; }
+    .tips {
+      margin-top: 20px;
+      padding: 16px 20px;
+      border-radius: 16px;
+      border: 1px solid rgba(212, 175, 55, 0.25);
+      background: rgba(212, 175, 55, 0.05);
+      font-size: 12.5px;
+      color: #e4e4e7;
+    }
+    .tips ul { margin-left: 18px; margin-top: 6px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="brand">
+        <div class="brand-icon">💈</div>
+        <div>
+          <h1>Onyx WhatsApp PC · Motor Open-Source Gratuito</h1>
+          <div class="subtitle" id="barberInfo">Sincronizando con Supabase...</div>
+        </div>
+      </div>
+      <div class="header-actions">
+        <div id="connBadge" class="badge qr">⏳ Iniciando...</div>
+      </div>
+    </header>
+
+    <div class="grid">
+      <!-- Columna 1: Estado de Conexión / QR + Prueba rápida -->
+      <div class="card">
+        <h2>
+          <span>📱 Vinculación de tu Número Nuevo</span>
+          <button id="logoutBtn" class="danger" style="display:none; padding:6px 10px; font-size:11.5px;" onclick="logoutWhatsApp()">Cambiar número</button>
+        </h2>
+        <p class="desc">Escanea el QR con el WhatsApp de tu chip nuevo. La sesión queda guardada en tu PC para no volver a escanear.</p>
+
+        <div id="connectionPanel" class="qr-box">
+          <div style="padding: 30px; color: var(--muted);">Cargando estado de WhatsApp...</div>
+        </div>
+
+        <div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line);">
+          <h2>🧪 Enviar WhatsApp de Prueba</h2>
+          <p class="desc" style="margin-bottom: 8px;">Prueba que tu número nuevo envíe mensajes correctamente (acepta 099 123 456).</p>
+          <div class="input-row">
+            <input type="tel" id="testPhone" placeholder="Ej: 099 123 456" />
+            <button onclick="sendTest()">Enviar Prueba</button>
+          </div>
+          <div id="testResult" style="font-size: 12px; margin-top: 6px; color: var(--emerald);"></div>
+        </div>
+      </div>
+
+      <!-- Columna 2: Reglas Automáticas -->
+      <div class="card">
+        <h2>⚙️ Mensajes Automáticos Activos</h2>
+        <p class="desc">Mensajes automáticos por WhatsApp con simulación de escritura humana y protección anti-bloqueo.</p>
+
+        <div class="toggle-list">
+          <label class="toggle-item">
+            <div>
+              <strong>✅ Confirmación inmediata al agendar</strong>
+              <span>Envía confirmación con fecha, hora, barbero y mapa apenas el cliente reserva.</span>
+            </div>
+            <input type="checkbox" id="chkConfirmations" onchange="saveSettings()" />
+          </label>
+
+          <label class="toggle-item">
+            <div>
+              <strong>⏰ Recordatorio 2 horas antes del turno</strong>
+              <span>Se envía automáticamente cuando faltan 2 horas para el turno.</span>
+            </div>
+            <input type="checkbox" id="chkReminders" onchange="saveSettings()" />
+          </label>
+
+          <label class="toggle-item">
+            <div>
+              <strong>⏱️ Recordatorio 1 minuto antes del turno</strong>
+              <span>Envía un aviso rápido 1 minuto antes de que comience la cita.</span>
+            </div>
+            <input type="checkbox" id="chkReminder1m" onchange="saveSettings()" />
+          </label>
+
+          <label class="toggle-item">
+            <div>
+              <strong>🔄 Aviso por reprogramación de horario</strong>
+              <span>Notifica si el turno cambia de día u hora.</span>
+            </div>
+            <input type="checkbox" id="chkRescheduled" onchange="saveSettings()" />
+          </label>
+
+          <label class="toggle-item">
+            <div>
+              <strong>❌ Aviso por cancelación de turno</strong>
+              <span>Envía aviso si el turno es cancelado.</span>
+            </div>
+            <input type="checkbox" id="chkCancelled" onchange="saveSettings()" />
+          </label>
+        </div>
+      </div>
+
+      <!-- Columna 3: Próximos Turnos en Agenda -->
+      <div class="card">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; flex-wrap: wrap; gap: 8px;">
+          <h2>📅 Próximos Turnos Confirmados</h2>
+          <select id="barberFilter" onchange="renderAppointments()" style="background:#121216; border:1px solid var(--line); color:var(--text); padding:6px 10px; border-radius:8px; font-size:12px; max-width:210px; cursor:pointer; outline:none;">
+            <option value="all">Todas las barberías</option>
+          </select>
+        </div>
+        <p class="desc">Turnos en vivo desde Supabase. Se enviarán solos, o puedes forzar un envío en 1 clic.</p>
+        <div id="appointmentsList" class="list"></div>
+      </div>
+
+      <!-- Columna 4: Historial de Envíos en Vivo -->
+      <div class="card">
+        <h2>📨 Historial de WhatsApps Enviados</h2>
+        <p class="desc">Registro en tiempo real con estado de entrega (Enviado / Entregado / Leído).</p>
+        <div id="historyList" class="list"></div>
+      </div>
+    </div>
+
+    <div class="tips">
+      <strong>🛡️ Consejos Anti-Bloqueo incluidos para cuidar tu chip nuevo:</strong>
+      <ul>
+        <li>El programa simula que estás <em>"escribiendo..."</em> durante 2 a 4 segundos antes de mandar cada mensaje y deja pausas aleatorias entre envíos.</li>
+        <li>Si un cliente responde <strong>BAJA</strong> o <strong>STOP</strong>, el programa lo da de baja automáticamente en Supabase para que nunca lo marquen como spam.</li>
+        <li>Durante los primeros 3 días del chip nuevo, te recomendamos intercambiar 5 o 10 mensajes normales con amigos o familiares desde el celular para "calentar" la línea en WhatsApp.</li>
+      </ul>
+    </div>
+  </div>
+
+  <script>
+    let initializedSettings = false;
+    let latestStatus = null;
+    let isFetching = false;
+
+    // Almacenar clave de URL si viene provista
+    (function initKeyFromUrl() {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const key = params.get("key");
+        if (key) {
+          localStorage.setItem("onyx_panel_key", key);
+        }
+      } catch {}
+    })();
+
+    function getSavedKey() {
+      return localStorage.getItem("onyx_panel_key") || "";
+    }
+
+    async function apiFetch(url, options = {}) {
+      const key = getSavedKey();
+      const headers = { ...(options.headers || {}) };
+      if (key) {
+        headers["x-panel-password"] = key;
+      }
+      let finalUrl = url;
+      if (key && !url.includes("key=")) {
+        finalUrl += (url.includes("?") ? "&" : "?") + `key=${encodeURIComponent(key)}`;
+      }
+      return fetch(finalUrl, { ...options, headers });
+    }
+
+    function escapeHtml(str) {
+      if (!str) return "";
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    async function fetchStatus() {
+      if (isFetching) return;
+      isFetching = true;
+      try {
+        const res = await apiFetch("/api/status");
+        if (!res.ok) {
+          console.warn("Status response not OK:", res.status);
+          return;
+        }
+        const data = await res.json();
+        latestStatus = data;
+
+        const barberEl = document.getElementById("barberInfo");
+        if (data.barbers && data.barbers.length > 0) {
+          const names = data.barbers.map(b => b.name).join(", ");
+          barberEl.textContent = `Multi-Barbería: ${data.barbers.length} locales conectados (${names})`;
+        } else if (data.barber) {
+          barberEl.textContent = `Conectado a Supabase: ${data.barber.name} (${data.barber.address || "Uruguay"})`;
+        }
+
+        const badge = document.getElementById("connBadge");
+        const panel = document.getElementById("connectionPanel");
+        const logoutBtn = document.getElementById("logoutBtn");
+
+        if (data.connectionStatus === "connected") {
+          badge.className = "badge connected";
+          badge.textContent = `🟢 Conectado (+${data.connectedPhone})`;
+          logoutBtn.style.display = "inline-block";
+          panel.innerHTML = `
+            <div style="font-size: 38px; margin-bottom: 8px;">✅</div>
+            <div style="font-weight: 700; font-size: 16px; color: #34d399;">WhatsApp Vinculado y Activo</div>
+            <div style="font-size: 13px; color: var(--muted); margin-top: 4px;">Línea emisora: <strong>+${data.connectedPhone}</strong></div>
+            <div style="font-size: 12px; color: var(--muted); margin-top: 8px;">Escuchando reservas y recordatorios de Supabase en tiempo real.</div>
+          `;
+        } else if (data.connectionStatus === "qr" && data.qrDataUrl) {
+          badge.className = "badge qr";
+          badge.textContent = "📷 Esperando escaneo QR";
+          logoutBtn.style.display = "none";
+          panel.innerHTML = `
+            <img src="${data.qrDataUrl}" alt="Código QR de WhatsApp" />
+            <div style="font-weight: 600; font-size: 14px; color: var(--gold);">Abre WhatsApp en el celular del número nuevo</div>
+            <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">Ve a Configuración → Dispositivos vinculados → Vincular un dispositivo</div>
+          `;
+        } else {
+          badge.className = "badge qr";
+          badge.textContent = "🔄 Conectando...";
+          panel.innerHTML = `<div style="padding: 25px; color: var(--muted);">Negociando conexión segura con WhatsApp Web...</div>`;
+        }
+
+        if (!initializedSettings && data.settings) {
+          document.getElementById("chkConfirmations").checked = !!data.settings.sendConfirmations;
+          document.getElementById("chkReminders").checked = !!data.settings.sendReminders;
+          document.getElementById("chkReminder1m").checked = data.settings.sendReminder1m !== false;
+          document.getElementById("chkRescheduled").checked = !!data.settings.sendRescheduled;
+          document.getElementById("chkCancelled").checked = !!data.settings.sendCancelled;
+          initializedSettings = true;
+        }
+
+        // Actualizar opciones del filtro de barberías
+        const barberFilter = document.getElementById("barberFilter");
+        const currentVal = barberFilter.value;
+        if (data.barbers && Array.isArray(data.barbers)) {
+          const totalCount = (data.upcomingAppointments || []).length;
+          const hashCheck = `${data.barbers.length}_${totalCount}`;
+          if (barberFilter.dataset.lastHash !== hashCheck) {
+            barberFilter.dataset.lastHash = hashCheck;
+            let opts = `<option value="all">Todas las barberías (${totalCount})</option>`;
+            for (const b of data.barbers) {
+              const bCount = (data.upcomingAppointments || []).filter(a => a.barber_id === b.id).length;
+              opts += `<option value="${b.id}">${escapeHtml(b.name)} (${bCount})</option>`;
+            }
+            barberFilter.innerHTML = opts;
+            if (currentVal) barberFilter.value = currentVal;
+          }
+        }
+
+        renderAppointments();
+        renderHistory();
+      } catch (e) {
+        console.error("fetchStatus error:", e);
+      } finally {
+        isFetching = false;
+      }
+    }
+
+    function renderAppointments() {
+      const apptList = document.getElementById("appointmentsList");
+      if (!latestStatus || !latestStatus.upcomingAppointments || latestStatus.upcomingAppointments.length === 0) {
+        apptList.innerHTML = `<div style="color: var(--muted); font-size: 13px; padding: 12px;">No hay turnos futuros pendientes en este momento.</div>`;
+        return;
+      }
+
+      const selectedBarber = document.getElementById("barberFilter").value;
+      const filtered = selectedBarber === "all"
+        ? latestStatus.upcomingAppointments
+        : latestStatus.upcomingAppointments.filter(a => a.barber_id === selectedBarber);
+
+      if (filtered.length === 0) {
+        apptList.innerHTML = `<div style="color: var(--muted); font-size: 13px; padding: 12px;">No hay turnos para la barbería seleccionada.</div>`;
+        return;
+      }
+
+      apptList.innerHTML = filtered.map((a) => {
+        const dt = new Date(a.start_at).toLocaleString("es-UY", {
+          day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23"
+        });
+        const barberTag = a.barber_name
+          ? `<span class="pill" style="background:rgba(212,175,55,0.15); color:var(--gold); border:1px solid rgba(212,175,55,0.3); font-size:10.5px; margin-left:6px;">${escapeHtml(a.barber_name)}</span>`
+          : "";
+        return `
+          <div class="list-item">
+            <div>
+              <div>
+                <strong>${escapeHtml(a.client_name)}</strong>
+                <span style="color:var(--muted); font-size:12px;">(${escapeHtml(a.client_phone)})</span>
+                ${barberTag}
+              </div>
+              <div style="font-size:12px; color:var(--muted); margin-top:2px;">
+                ${escapeHtml(a.service_name || "Servicio")}${a.member_name ? " · 💈 " + escapeHtml(a.member_name) : ""} · 📅 ${dt}
+              </div>
+            </div>
+            <div style="display:flex; gap:6px; flex-shrink:0;">
+              <button class="secondary" style="padding:6px 10px; font-size:11.5px; font-weight:600;" onclick="manualSend(this, '${a.id}', 'confirmation')">📩 Confirmación</button>
+              <button style="padding:6px 10px; font-size:11.5px; font-weight:600;" onclick="manualSend(this, '${a.id}', 'reminder')">⏰ Recordar</button>
+            </div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function renderHistory() {
+      const histList = document.getElementById("historyList");
+      if (!latestStatus || !latestStatus.history || latestStatus.history.length === 0) {
+        histList.innerHTML = `<div style="color: var(--muted); font-size: 13px; padding: 12px;">Aún no se han enviado mensajes desde esta PC.</div>`;
+        return;
+      }
+
+      const labels = {
+        confirmation: "Confirmación",
+        reminder: "Recordatorio 2h",
+        reminder_1m: "Recordatorio 1m",
+        rescheduled: "Reprogramado",
+        cancelled: "Cancelado",
+        test: "Prueba",
+        waitlist: "Lista espera"
+      };
+      const statusLabels = { sent: "Enviado ✓", delivered: "Entregado ✓✓", read: "Leído ✓✓" };
+
+      histList.innerHTML = latestStatus.history.map((h) => {
+        const t = new Date(h.sentAt).toLocaleTimeString("es-UY", { hour: "2-digit", minute: "2-digit" });
+        const barberTag = h.barber_name
+          ? `<span class="pill" style="font-size:10px; background:#22222a; color:#a1a1aa; border:1px solid var(--line); margin-left:6px;">${escapeHtml(h.barber_name)}</span>`
+          : "";
+        return `
+          <div class="list-item">
+            <div>
+              <div>
+                <strong>${escapeHtml(h.clientName)}</strong>
+                <span style="color:var(--muted); font-size:12px;">+${escapeHtml(h.phone)}</span>
+                ${barberTag}
+              </div>
+              <div style="font-size:11.5px; color:var(--muted); margin-top:2px;">${labels[h.kind] || h.kind} · ${t} hs</div>
+            </div>
+            <span class="pill ${h.status}">${statusLabels[h.status] || h.status}</span>
+          </div>
+        `;
+      }).join("");
+    }
+
+    async function saveSettings() {
+      try {
+        await apiFetch("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sendConfirmations: document.getElementById("chkConfirmations").checked,
+            sendReminders: document.getElementById("chkReminders").checked,
+            sendReminder1m: document.getElementById("chkReminder1m").checked,
+            sendRescheduled: document.getElementById("chkRescheduled").checked,
+            sendCancelled: document.getElementById("chkCancelled").checked,
+          }),
+        });
+      } catch (err) {
+        console.error("Error guardando settings:", err);
+      }
+    }
+
+    async function sendTest() {
+      const phone = document.getElementById("testPhone").value.trim();
+      const resEl = document.getElementById("testResult");
+      if (!phone) return alert("Escribe un número de teléfono (ej: 099 123 456)");
+      resEl.style.color = "var(--gold)";
+      resEl.textContent = "⏳ Simulando escritura y enviando WhatsApp...";
+      try {
+        const res = await apiFetch("/api/send-test", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ phone }),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          resEl.style.color = "var(--emerald)";
+          resEl.textContent = "✅ ¡Mensaje enviado con éxito!";
+          fetchStatus();
+        } else {
+          resEl.style.color = "var(--red)";
+          resEl.textContent = "❌ Error: " + (data.error || "No se pudo enviar");
+        }
+      } catch (err) {
+        resEl.style.color = "var(--red)";
+        resEl.textContent = "❌ Error: " + err.message;
+      }
+    }
+
+    async function manualSend(btn, appointmentId, kind) {
+      const origText = btn ? btn.textContent : "";
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "⏳ Enviando...";
+      }
+      try {
+        const res = await apiFetch("/api/send-appointment", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ appointmentId, kind }),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          if (btn) btn.textContent = "✅ ¡Enviado!";
+          alert("✅ WhatsApp enviado correctamente al cliente.");
+          setTimeout(() => {
+            if (btn) {
+              btn.disabled = false;
+              btn.textContent = origText;
+            }
+          }, 2000);
+          fetchStatus();
+        } else {
+          alert("❌ Error: " + (data.error || "No se pudo enviar"));
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = origText;
+          }
+        }
+      } catch (err) {
+        alert("❌ Error: " + err.message);
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = origText;
+        }
+      }
+    }
+
+    async function logoutWhatsApp() {
+      if (!confirm("¿Seguro que deseas desvincular el número actual para escanear un código QR nuevo?")) return;
+      try {
+        await apiFetch("/api/logout", { method: "POST" });
+        fetchStatus();
+      } catch (err) {
+        console.error("Error cerrando sesión WhatsApp:", err);
+      }
+    }
+
+    fetchStatus();
+    setInterval(fetchStatus, 3500);
+  </script>
+</body>
+</html>

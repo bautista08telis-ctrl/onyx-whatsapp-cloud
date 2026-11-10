@@ -1,0 +1,17 @@
+{
+  "name": "onyx-whatsapp-pc",
+  "version": "1.0.0",
+  "description": "Puente Open-Source gratuito de WhatsApp desde PC para Onyx / BarberFlow conectado a Supabase",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.1",
+    "@whiskeysockets/baileys": "^6.7.16",
+    "pino": "^9.6.0",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0"
+  }
+}

@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: onyx-whatsapp-cloud
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node src/index.mjs
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: PUBLIC_APP_URL
+        value: https://barberflow-weld.vercel.app
+      - key: PANEL_PASSWORD
+        sync: false
