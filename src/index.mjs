@@ -163,71 +163,100 @@ async function restoreCloudVault() {
 let cloudBackupTimer = null;
 let cloudBackupInFlight = false;
 let cloudBackupPending = false;
+let cloudBackupPromise = null;
+let shuttingDown = false;
 
 async function runCloudBackup() {
   if (cloudBackupInFlight) {
     cloudBackupPending = true;
-    return;
+    return cloudBackupPromise;
   }
   cloudBackupInFlight = true;
-  try {
-    if (fs.existsSync(STATE_FILE)) {
-      const buf = fs.readFileSync(STATE_FILE);
-      await supabase.storage.from(STORAGE_BUCKET).upload("state.json", buf, {
-        upsert: true,
-        contentType: "application/json",
-      });
-    }
-
-    if (fs.existsSync(AUTH_DIR)) {
-      const diskFiles = fs.readdirSync(AUTH_DIR).filter((name) => name.endsWith(".json"));
-      const toUpload = [];
-      for (const fileName of diskFiles) {
-        const filePath = path.join(AUTH_DIR, fileName);
-        try {
-          const sig = getFileSignature(filePath);
-          if (uploadedAuthSignatures.get(fileName) !== sig) {
-            toUpload.push({ fileName, filePath, sig });
-          }
-        } catch {}
+  cloudBackupPromise = (async () => {
+    try {
+      if (fs.existsSync(STATE_FILE)) {
+        const buf = fs.readFileSync(STATE_FILE);
+        await supabase.storage.from(STORAGE_BUCKET).upload("state.json", buf, {
+          upsert: true,
+          contentType: "application/json",
+        });
       }
 
-      const concurrency = 6;
-      for (let i = 0; i < toUpload.length; i += concurrency) {
-        const batch = toUpload.slice(i, i + concurrency);
-        await Promise.all(
-          batch.map(async ({ fileName, filePath, sig }) => {
-            try {
-              const buf = fs.readFileSync(filePath);
-              const { error } = await supabase.storage.from(STORAGE_BUCKET).upload(fileName, buf, {
-                upsert: true,
-                contentType: "application/json",
-              });
-              if (!error) {
-                uploadedAuthSignatures.set(fileName, sig);
-              }
-            } catch {}
-          })
-        );
+      if (fs.existsSync(AUTH_DIR)) {
+        const diskFiles = fs.readdirSync(AUTH_DIR).filter((name) => name.endsWith(".json"));
+        const toUpload = [];
+        for (const fileName of diskFiles) {
+          const filePath = path.join(AUTH_DIR, fileName);
+          try {
+            const sig = getFileSignature(filePath);
+            if (uploadedAuthSignatures.get(fileName) !== sig) {
+              toUpload.push({ fileName, filePath, sig });
+            }
+          } catch {}
+        }
+
+        const concurrency = 6;
+        for (let i = 0; i < toUpload.length; i += concurrency) {
+          const batch = toUpload.slice(i, i + concurrency);
+          await Promise.all(
+            batch.map(async ({ fileName, filePath, sig }) => {
+              try {
+                const buf = fs.readFileSync(filePath);
+                const { error } = await supabase.storage.from(STORAGE_BUCKET).upload(fileName, buf, {
+                  upsert: true,
+                  contentType: "application/json",
+                });
+                if (!error) {
+                  uploadedAuthSignatures.set(fileName, sig);
+                }
+              } catch {}
+            })
+          );
+        }
+      }
+    } catch (err) {
+      console.warn("⚠️ Error respaldando sesión en la nube:", err?.message || err);
+    } finally {
+      cloudBackupInFlight = false;
+      cloudBackupPromise = null;
+      if (cloudBackupPending && !shuttingDown) {
+        cloudBackupPending = false;
+        scheduleCloudBackup();
       }
     }
-  } catch (err) {
-    console.warn("⚠️ Error respaldando sesión en la nube:", err?.message || err);
-  } finally {
-    cloudBackupInFlight = false;
-    if (cloudBackupPending) {
-      cloudBackupPending = false;
-      scheduleCloudBackup();
-    }
-  }
+  })();
+  return cloudBackupPromise;
 }
 
 function scheduleCloudBackup() {
+  if (shuttingDown) return;
   if (cloudBackupTimer) clearTimeout(cloudBackupTimer);
   cloudBackupTimer = setTimeout(() => {
     cloudBackupTimer = null;
     void runCloudBackup();
   }, CLOUD_BACKUP_DEBOUNCE_MS);
+}
+
+async function flushCloudBackup() {
+  if (cloudBackupTimer) {
+    clearTimeout(cloudBackupTimer);
+    cloudBackupTimer = null;
+    cloudBackupPending = true;
+  }
+  saveState();
+  if (cloudBackupTimer) {
+    clearTimeout(cloudBackupTimer);
+    cloudBackupTimer = null;
+    cloudBackupPending = true;
+  }
+  while (cloudBackupInFlight || cloudBackupPending) {
+    if (cloudBackupPromise) {
+      await cloudBackupPromise.catch(() => {});
+    } else if (cloudBackupPending) {
+      cloudBackupPending = false;
+      await runCloudBackup();
+    }
+  }
 }
 
 async function clearCloudSession() {
@@ -275,8 +304,8 @@ function loadStateFromDisk() {
         settings: {
           ...defaultState.settings,
           ...(parsed.settings || {}),
-          sendConfirmations: true,
-          sendReminders: true,
+          sendConfirmations: parsed.settings?.sendConfirmations ?? defaultState.settings.sendConfirmations,
+          sendReminders: parsed.settings?.sendReminders ?? defaultState.settings.sendReminders,
         },
       };
     }
@@ -311,6 +340,37 @@ let cachedWaitlist = [];
 let sendQueue = Promise.resolve();
 let reconnectTimer = null;
 let startingWhatsApp = false;
+const inFlightKeys = new Set();
+
+function getBusinessTodayIso(timeZone = "America/Montevideo") {
+  const opts = { timeZone: timeZone || "America/Montevideo", year: "numeric", month: "2-digit", day: "2-digit" };
+  try {
+    return new Intl.DateTimeFormat("en-CA", opts).format(new Date());
+  } catch {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Montevideo",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  }
+}
+
+async function sendTrackedKey(key, fn) {
+  if (state.sentKeys[key] || inFlightKeys.has(key)) return { skipped: true };
+  inFlightKeys.add(key);
+  try {
+    const value = await fn();
+    state.sentKeys[key] = new Date().toISOString();
+    saveState();
+    return { skipped: false, value };
+  } catch (err) {
+    delete state.sentKeys[key];
+    throw err;
+  } finally {
+    inFlightKeys.delete(key);
+  }
+}
 
 const MAX_SENT_MESSAGES_CACHE = 200;
 const sentMessagesCache = new Map();
@@ -742,7 +802,7 @@ async function syncBarber(barber) {
     if (error || !appointments) return;
     cachedAppointments.push(...appointments);
 
-    const todayIso = new Date().toISOString().slice(0, 10);
+    const todayIso = getBusinessTodayIso(barber.timezone);
     const { data: waitlist } = await supabase
       .from("waitlist")
       .select("*")
@@ -775,11 +835,9 @@ async function syncBarber(barber) {
         (now - createdMs) < 24 * 3600 * 1000 &&
         !state.sentKeys[confKey]
       ) {
-        state.sentKeys[confKey] = new Date().toISOString();
-        saveState();
         try {
           console.log(`📨 [Confirmación WhatsApp] -> ${a.client_name} (${a.client_phone}) - ${apptBarber.name}`);
-          await sendAppointment(a, "confirmation", apptBarber);
+          await sendTrackedKey(confKey, () => sendAppointment(a, "confirmation", apptBarber));
         } catch (err) {
           console.error(`⚠️ Error enviando confirmación a ${a.client_name}:`, err.message);
         }
@@ -793,15 +851,15 @@ async function syncBarber(barber) {
         minsUntilStart <= 125 &&
         !state.sentKeys[remKey]
       ) {
-        state.sentKeys[remKey] = new Date().toISOString();
-        saveState();
         try {
           console.log(`⏰ [Recordatorio 2h WhatsApp] -> ${a.client_name} (${a.client_phone}) - ${apptBarber.name}`);
-          const msgId = await sendAppointment(a, "reminder", apptBarber);
-          await supabase.from("notification_jobs")
-            .update({ status: "sent", sent_at: new Date().toISOString(), provider_id: msgId, delivery_status: "sent", lease_until: null })
-            .eq("appointment_id", a.id)
-            .eq("channel", "whatsapp");
+          const res = await sendTrackedKey(remKey, () => sendAppointment(a, "reminder", apptBarber));
+          if (!res.skipped) {
+            await supabase.from("notification_jobs")
+              .update({ status: "sent", sent_at: new Date().toISOString(), provider_id: res.value, delivery_status: "sent", lease_until: null })
+              .eq("appointment_id", a.id)
+              .eq("channel", "whatsapp");
+          }
         } catch (err) {
           console.error(`⚠️ Error enviando recordatorio 2h a ${a.client_name}:`, err.message);
         }
@@ -815,11 +873,9 @@ async function syncBarber(barber) {
         minsUntilStart <= 1.5 &&
         !state.sentKeys[rem1mKey]
       ) {
-        state.sentKeys[rem1mKey] = new Date().toISOString();
-        saveState();
         try {
           console.log(`⏱️ [Recordatorio 1m WhatsApp] -> ${a.client_name} (${a.client_phone}) - ${apptBarber.name}`);
-          await sendAppointment(a, "reminder_1m", apptBarber);
+          await sendTrackedKey(rem1mKey, () => sendAppointment(a, "reminder_1m", apptBarber));
         } catch (err) {
           console.error(`⚠️ Error enviando recordatorio 1m a ${a.client_name}:`, err.message);
         }
@@ -856,15 +912,15 @@ async function syncBarber(barber) {
               .eq("id", job.id);
             continue;
           }
-          state.sentKeys[remKey] = new Date().toISOString();
-          saveState();
+          if (inFlightKeys.has(remKey)) continue;
           try {
-            const msgId = await sendAppointment(appt, "reminder", apptBarber);
+            const res = await sendTrackedKey(remKey, () => sendAppointment(appt, "reminder", apptBarber));
+            if (res.skipped) continue;
             await supabase
               .from("notification_jobs")
               .update({
                 status: "sent",
-                provider_id: msgId,
+                provider_id: res.value,
                 delivery_status: "sent",
                 sent_at: new Date().toISOString(),
                 lease_until: null,
@@ -977,8 +1033,18 @@ const server = http.createServer(async (req, res) => {
       const body = await readJsonBody(req);
       state.settings = {
         ...state.settings,
-        sendReminders: Boolean(body.sendReminders),
-        sendReminder1m: body.sendReminder1m !== undefined ? Boolean(body.sendReminder1m) : state.settings.sendReminder1m,
+        sendConfirmations:
+          body.sendConfirmations !== undefined
+            ? Boolean(body.sendConfirmations)
+            : state.settings.sendConfirmations,
+        sendReminders:
+          body.sendReminders !== undefined
+            ? Boolean(body.sendReminders)
+            : state.settings.sendReminders,
+        sendReminder1m:
+          body.sendReminder1m !== undefined
+            ? Boolean(body.sendReminder1m)
+            : state.settings.sendReminder1m,
       };
       saveState();
       return sendJson(res, 200, { ok: true, settings: state.settings });
@@ -1104,3 +1170,30 @@ const server = http.createServer(async (req, res) => {
     void startWhatsApp();
   });
 })();
+
+async function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`🛑 Recibido ${signal}, guardando estado y respaldo antes de apagar...`);
+  try {
+    const hadPending = Boolean(cloudBackupTimer || cloudBackupInFlight || cloudBackupPending);
+    if (hadPending) {
+      await Promise.race([flushCloudBackup(), sleep(4500)]);
+    } else {
+      saveState();
+      if (cloudBackupTimer) {
+        clearTimeout(cloudBackupTimer);
+        cloudBackupTimer = null;
+      }
+    }
+  } catch (err) {
+    console.warn("⚠️ Error durante el respaldo de apagado:", err?.message || err);
+  }
+  try {
+    server.close();
+  } catch {}
+  process.exit(0);
+}
+
+process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
