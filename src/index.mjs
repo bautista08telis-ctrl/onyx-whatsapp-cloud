@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import makeWASocket, {
   DisconnectReason,
   fetchLatestBaileysVersion,
+  makeCacheableSignalKeyStore,
   useMultiFileAuthState,
 } from "@whiskeysockets/baileys";
 import { createClient } from "@supabase/supabase-js";
@@ -70,13 +71,43 @@ const AUTH_DIR = path.join(ROOT_DIR, "auth_session");
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
 
+const CLOUD_BACKUP_DEBOUNCE_MS = 3500;
+const uploadedAuthSignatures = new Map();
+
+function getFileSignature(filePath) {
+  const stat = fs.statSync(filePath);
+  return `${stat.size}:${stat.mtimeMs}`;
+}
+
+async function listVaultFiles() {
+  const files = [];
+  let offset = 0;
+  const pageSize = 1000;
+  while (true) {
+    const { data, error } = await supabase.storage
+      .from(STORAGE_BUCKET)
+      .list("", { limit: pageSize, offset });
+    if (error || !data?.length) break;
+    for (const item of data) {
+      if (item?.name && item.name.endsWith(".json")) {
+        files.push(item.name);
+      }
+    }
+    if (data.length < pageSize) break;
+    offset += data.length;
+  }
+  return files;
+}
+
 async function ensureStorageBucket() {
   try {
     const { data: buckets } = await supabase.storage.listBuckets();
-    if (!buckets?.some((b) => b. id === STORAGE_BUCKET)) {
+    if (!buckets?.some((b) => b.id === STORAGE_BUCKET)) {
       await supabase.storage.createBucket(STORAGE_BUCKET, { public: false });
     }
-  } catch {}
+  } catch (err) {
+    console.warn("⚠️ No se pudo verificar bucket en Supabase Storage:", err?.message || err);
+  }
 }
 
 async function restoreCloudVault() {
@@ -91,47 +122,131 @@ async function restoreCloudVault() {
         console.log("☁️ Estado restaurado desde la nube.");
       }
     }
-    // Restaurar creds.json de WhatsApp si no existe localmente
-    const credsPath = path.join(AUTH_DIR, "creds.json");
-    if (!fs.existsSync(credsPath)) {
-      const { data } = await supabase.storage.from(STORAGE_BUCKET).download("creds.json");
-      if (data) {
-        const text = await data.text();
-        fs.writeFileSync(credsPath, text, "utf8");
-        console.log("☁️ Sesión de WhatsApp restaurada desde la nube (sin necesidad de re-escanear QR).");
-      }
+    // Restaurar todos los archivos de sesión y llaves Signal de WhatsApp (creds, session-*, pre-key-*, sender-key-*)
+    const vaultFiles = await listVaultFiles();
+    const authFiles = vaultFiles.filter((name) => name !== "state.json");
+    let restoredCount = 0;
+    const concurrency = 8;
+    for (let i = 0; i < authFiles.length; i += concurrency) {
+      const batch = authFiles.slice(i, i + concurrency);
+      await Promise.all(
+        batch.map(async (fileName) => {
+          const safeName = path.basename(fileName);
+          if (safeName !== fileName) return;
+          const targetPath = path.join(AUTH_DIR, safeName);
+          if (fs.existsSync(targetPath)) {
+            try {
+              uploadedAuthSignatures.set(safeName, getFileSignature(targetPath));
+            } catch {}
+            return;
+          }
+          try {
+            const { data } = await supabase.storage.from(STORAGE_BUCKET).download(safeName);
+            if (data) {
+              const buf = Buffer.from(await data.arrayBuffer());
+              fs.writeFileSync(targetPath, buf);
+              uploadedAuthSignatures.set(safeName, getFileSignature(targetPath));
+              restoredCount += 1;
+            }
+          } catch {}
+        })
+      );
     }
-  } catch {}
+    if (restoredCount > 0) {
+      console.log(`☁️ Sesión y llaves Signal restauradas desde la nube (${restoredCount} archivos, sin re-escanear QR).`);
+    }
+  } catch (err) {
+    console.warn("⚠️ Error restaurando respaldo desde la nube:", err?.message || err);
+  }
 }
 
 let cloudBackupTimer = null;
+let cloudBackupInFlight = false;
+let cloudBackupPending = false;
+
+async function runCloudBackup() {
+  if (cloudBackupInFlight) {
+    cloudBackupPending = true;
+    return;
+  }
+  cloudBackupInFlight = true;
+  try {
+    if (fs.existsSync(STATE_FILE)) {
+      const buf = fs.readFileSync(STATE_FILE);
+      await supabase.storage.from(STORAGE_BUCKET).upload("state.json", buf, {
+        upsert: true,
+        contentType: "application/json",
+      });
+    }
+
+    if (fs.existsSync(AUTH_DIR)) {
+      const diskFiles = fs.readdirSync(AUTH_DIR).filter((name) => name.endsWith(".json"));
+      const toUpload = [];
+      for (const fileName of diskFiles) {
+        const filePath = path.join(AUTH_DIR, fileName);
+        try {
+          const sig = getFileSignature(filePath);
+          if (uploadedAuthSignatures.get(fileName) !== sig) {
+            toUpload.push({ fileName, filePath, sig });
+          }
+        } catch {}
+      }
+
+      const concurrency = 6;
+      for (let i = 0; i < toUpload.length; i += concurrency) {
+        const batch = toUpload.slice(i, i + concurrency);
+        await Promise.all(
+          batch.map(async ({ fileName, filePath, sig }) => {
+            try {
+              const buf = fs.readFileSync(filePath);
+              const { error } = await supabase.storage.from(STORAGE_BUCKET).upload(fileName, buf, {
+                upsert: true,
+                contentType: "application/json",
+              });
+              if (!error) {
+                uploadedAuthSignatures.set(fileName, sig);
+              }
+            } catch {}
+          })
+        );
+      }
+    }
+  } catch (err) {
+    console.warn("⚠️ Error respaldando sesión en la nube:", err?.message || err);
+  } finally {
+    cloudBackupInFlight = false;
+    if (cloudBackupPending) {
+      cloudBackupPending = false;
+      scheduleCloudBackup();
+    }
+  }
+}
+
 function scheduleCloudBackup() {
   if (cloudBackupTimer) clearTimeout(cloudBackupTimer);
-  cloudBackupTimer = setTimeout(async () => {
-    try {
-      if (fs.existsSync(STATE_FILE)) {
-        const buf = fs.readFileSync(STATE_FILE);
-        await supabase.storage.from(STORAGE_BUCKET).upload("state.json", buf, {
-          upsert: true,
-          contentType: "application/json",
-        });
-      }
-      const credsPath = path.join(AUTH_DIR, "creds.json");
-      if (fs.existsSync(credsPath)) {
-        const buf = fs.readFileSync(credsPath);
-        await supabase.storage.from(STORAGE_BUCKET).upload("creds.json", buf, {
-          upsert: true,
-          contentType: "application/json",
-        });
-      }
-    } catch {}
-  }, 2500);
+  cloudBackupTimer = setTimeout(() => {
+    cloudBackupTimer = null;
+    void runCloudBackup();
+  }, CLOUD_BACKUP_DEBOUNCE_MS);
 }
 
 async function clearCloudSession() {
   try {
-    await supabase.storage.from(STORAGE_BUCKET).remove(["creds.json"]);
-  } catch {}
+    if (cloudBackupTimer) {
+      clearTimeout(cloudBackupTimer);
+      cloudBackupTimer = null;
+    }
+    cloudBackupPending = false;
+    uploadedAuthSignatures.clear();
+    sentMessagesCache.clear();
+    const vaultFiles = await listVaultFiles();
+    const authFiles = vaultFiles.filter((name) => name !== "state.json");
+    for (let i = 0; i < authFiles.length; i += 100) {
+      await supabase.storage.from(STORAGE_BUCKET).remove(authFiles.slice(i, i + 100));
+    }
+  } catch (err) {
+    console.warn("⚠️ Error limpiando sesión en la nube:", err?.message || err);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -194,6 +309,23 @@ let cachedBarbers = new Map();
 let cachedAppointments = [];
 let cachedWaitlist = [];
 let sendQueue = Promise.resolve();
+let reconnectTimer = null;
+let startingWhatsApp = false;
+
+const MAX_SENT_MESSAGES_CACHE = 200;
+const sentMessagesCache = new Map();
+
+function cacheSentMessage(sentMsg) {
+  const id = sentMsg?.key?.id;
+  const message = sentMsg?.message;
+  if (!id || !message) return;
+  if (sentMessagesCache.has(id)) sentMessagesCache.delete(id);
+  sentMessagesCache.set(id, message);
+  while (sentMessagesCache.size > MAX_SENT_MESSAGES_CACHE) {
+    const oldestKey = sentMessagesCache.keys().next().value;
+    sentMessagesCache.delete(oldestKey);
+  }
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const randomBetween = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
@@ -230,7 +362,14 @@ function enqueueWhatsAppSend({ phone, text, meta = {}, quota }) {
       if (decision === "inactive") throw new Error("La barbería tiene los mensajes desactivados");
       if (decision !== "reserved") throw new Error("El mensaje ya fue reservado o no pertenece a este profesional");
     }
+
+    try {
+      await sock.assertSessions([targetJid], true);
+    } catch {}
+
     const sentMsg = await sock.sendMessage(targetJid, { text });
+    cacheSentMessage(sentMsg);
+    scheduleCloudBackup();
     const messageId = sentMsg?.key?.id || `local-${Date.now()}`;
 
     if (meta.kind === "staff_booking_alert") {
@@ -279,133 +418,189 @@ function sendAppointment(appointment, kind, barber) {
 // ─────────────────────────────────────────────────────────────────────────────
 // 5. Conexión Baileys (WhatsApp Web Multi-Device)
 // ─────────────────────────────────────────────────────────────────────────────
+function scheduleWhatsAppReconnect(delayMs) {
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    void startWhatsApp();
+  }, delayMs);
+}
+
 async function startWhatsApp() {
-  const { state: authState, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-  let version = [2, 3000, 1015901307];
+  if (startingWhatsApp) return;
+  startingWhatsApp = true;
   try {
-    const latest = await fetchLatestBaileysVersion();
-    version = latest.version;
-  } catch {}
-
-  sock = makeWASocket({
-    version,
-    auth: authState,
-    logger: pino({ level: "silent" }),
-    printQRInTerminal: false,
-    browser: ["Onyx BarberFlow Cloud", "Chrome", "122.0.0"],
-    syncFullHistory: false,
-    markOnlineOnConnect: false,
-  });
-
-  sock.ev.on("creds.update", async () => {
-    await saveCreds();
-    scheduleCloudBackup();
-  });
-
-  sock.ev.on("connection.update", async (update) => {
-    const { connection, lastDisconnect, qr } = update;
-
-    if (qr) {
-      connectionStatus = "qr";
-      currentQrDataUrl = await QRCode.toDataURL(qr, { margin: 2, width: 320 });
-      console.log("\n══════════════════════════════════════════════════════════════");
-      console.log("📱 ESCANEA ESTE CÓDIGO QR CON EL WHATSAPP DE TU NÚMERO NUEVO");
-      console.log("   (O desde el panel web en el puerto " + PORT + ")");
-      console.log("══════════════════════════════════════════════════════════════\n");
-      qrcodeTerminal.generate(qr, { small: true });
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    if (sock) {
+      try {
+        sock.ev.removeAllListeners();
+        sock.end?.(undefined);
+      } catch {}
+      sock = null;
     }
 
-    if (connection === "open") {
-      connectionStatus = "connected";
-      currentQrDataUrl = null;
-      connectedPhone = sock.user?.id ? sock.user.id.split(":")[0].split("@")[0] : "Conectado";
-      console.log(`\n🟢 ¡WHATSAPP CONECTADO CON ÉXITO! Número activo: +${connectedPhone}`);
+    const baileysLogger = pino({ level: "silent" });
+    const { state: authState, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+    const originalKeysSet = authState.keys.set.bind(authState.keys);
+    authState.keys.set = async (data) => {
+      await originalKeysSet(data);
       scheduleCloudBackup();
-      void syncWithSupabase();
-    }
+    };
 
-    if (connection === "close") {
-      const statusCode = lastDisconnect?.error?.output?.statusCode;
-      const loggedOut = statusCode === DisconnectReason.loggedOut;
-      connectedPhone = null;
+    let version = [2, 3000, 1015901307];
+    try {
+      const latest = await fetchLatestBaileysVersion();
+      version = latest.version;
+    } catch {}
 
-      if (loggedOut) {
-        console.log("🔴 Sesión cerrada desde el celular. Limpiando credenciales para generar nuevo QR...");
+    sock = makeWASocket({
+      version,
+      auth: {
+        creds: authState.creds,
+        keys: makeCacheableSignalKeyStore(authState.keys, baileysLogger),
+      },
+      logger: baileysLogger,
+      printQRInTerminal: false,
+      browser: ["Onyx BarberFlow Cloud", "Chrome", "122.0.0"],
+      syncFullHistory: false,
+      markOnlineOnConnect: false,
+      getMessage: async (key) => {
+        if (!key?.id) return undefined;
+        return sentMessagesCache.get(key.id) || undefined;
+      },
+    });
+
+    sock.ev.on("creds.update", async () => {
+      try {
+        await saveCreds();
+        scheduleCloudBackup();
+      } catch (err) {
+        console.warn("⚠️ Error guardando credenciales de Baileys:", err?.message || err);
+      }
+    });
+
+    sock.ev.on("connection.update", async (update) => {
+      const { connection, lastDisconnect, qr } = update;
+
+      if (qr) {
         connectionStatus = "qr";
         try {
-          fs.rmSync(AUTH_DIR, { recursive: true, force: true });
-          fs.mkdirSync(AUTH_DIR, { recursive: true });
-        } catch {}
-        await clearCloudSession();
-        setTimeout(startWhatsApp, 2000);
-      } else {
-        connectionStatus = "reconnecting";
-        console.log("🔄 Reconectando con WhatsApp en 4 segundos...");
-        setTimeout(startWhatsApp, 4000);
-      }
-    }
-  });
-
-  sock.ev.on("messages.update", async (updates) => {
-    for (const u of updates) {
-      const msgId = u.key?.id;
-      const rawStatus = u.update?.status;
-      if (!msgId || !rawStatus) continue;
-      const mapped = rawStatus === 4 || rawStatus === 5 ? "read" : rawStatus === 3 ? "delivered" : null;
-      if (!mapped) continue;
-
-      const hist = state.history.find((h) => h.id === msgId);
-      if (hist) {
-        hist.status = mapped;
-        saveState();
+          currentQrDataUrl = await QRCode.toDataURL(qr, { margin: 2, width: 320 });
+        } catch (err) {
+          console.warn("⚠️ No se pudo renderizar QR en DataURL:", err?.message || err);
+        }
+        console.log("\n══════════════════════════════════════════════════════════════");
+        console.log("📱 ESCANEA ESTE CÓDIGO QR CON EL WHATSAPP DE TU NÚMERO NUEVO");
+        console.log("   (O desde el panel web en el puerto " + PORT + ")");
+        console.log("══════════════════════════════════════════════════════════════\n");
+        qrcodeTerminal.generate(qr, { small: true });
       }
 
-      try {
-        await supabase
-          .from("notification_jobs")
-          .update({ delivery_status: mapped })
-          .eq("provider_id", msgId)
-          .eq("channel", "whatsapp");
-      } catch {}
-    }
-  });
+      if (connection === "open") {
+        connectionStatus = "connected";
+        currentQrDataUrl = null;
+        connectedPhone = sock?.user?.id ? sock.user.id.split(":")[0].split("@")[0] : "Conectado";
+        console.log(`\n🟢 ¡WHATSAPP CONECTADO CON ÉXITO! Número activo: +${connectedPhone}`);
+        scheduleCloudBackup();
+        void syncWithSupabase();
+      }
 
-  sock.ev.on("messages.upsert", async ({ messages, type }) => {
-    if (type !== "notify") return;
-    for (const msg of messages) {
-      if (msg.key.fromMe) continue;
-      const senderJid = msg.key.remoteJid || "";
-      if (!senderJid.endsWith("@s.whatsapp.net")) continue;
-      const fromPhone = normalizeUruguayPhone(senderJid.split("@")[0]);
-      const text = (
-        msg.message?.conversation ||
-        msg.message?.extendedTextMessage?.text ||
-        ""
-      )
-        .trim()
-        .toUpperCase();
+      if (connection === "close") {
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        const loggedOut = statusCode === DisconnectReason.loggedOut;
+        connectedPhone = null;
 
-      if (["BAJA", "STOP", "CANCELAR RECORDATORIOS"].includes(text)) {
-        if (!state.optOutPhones.includes(fromPhone)) {
-          state.optOutPhones.push(fromPhone);
+        if (loggedOut) {
+          console.log("🔴 Sesión cerrada desde el celular. Limpiando credenciales para generar nuevo QR...");
+          connectionStatus = "qr";
+          try {
+            fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+            fs.mkdirSync(AUTH_DIR, { recursive: true });
+          } catch {}
+          await clearCloudSession();
+          scheduleWhatsAppReconnect(2000);
+        } else {
+          connectionStatus = "reconnecting";
+          console.log("🔄 Reconectando con WhatsApp en 4 segundos...");
+          scheduleWhatsAppReconnect(4000);
+        }
+      }
+    });
+
+    sock.ev.on("messages.update", async (updates) => {
+      for (const u of updates) {
+        const msgId = u.key?.id;
+        const rawStatus = u.update?.status;
+        if (!msgId || !rawStatus) continue;
+        const mapped = rawStatus === 4 || rawStatus === 5 ? "read" : rawStatus === 3 ? "delivered" : null;
+        if (!mapped) continue;
+
+        const hist = state.history.find((h) => h.id === msgId);
+        if (hist) {
+          hist.status = mapped;
           saveState();
         }
-        await supabase
-          .from("appointments")
-          .update({ whatsapp_opt_in: false })
-          .eq("client_phone", fromPhone)
-          .eq("status", "confirmed");
-        console.log(`🔕 Cliente ${fromPhone} solicitó BAJA de recordatorios.`);
+
         try {
-          await enqueueWhatsAppSend({
-            phone: fromPhone,
-            text: "✅ Hemos desactivado los recordatorios automáticos por WhatsApp para tu número. ¡Gracias!",
-            meta: { clientName: "Baja automática", kind: "opt_out" },
-          });
+          await supabase
+            .from("notification_jobs")
+            .update({ delivery_status: mapped })
+            .eq("provider_id", msgId)
+            .eq("channel", "whatsapp");
         } catch {}
       }
-    }
-  });
+    });
+
+    sock.ev.on("messages.upsert", async ({ messages, type }) => {
+      if (type !== "notify") return;
+      for (const msg of messages) {
+        if (msg.key.fromMe) continue;
+        const senderJid = msg.key.remoteJid || "";
+        if (!senderJid.endsWith("@s.whatsapp.net")) continue;
+        const fromPhone = normalizeUruguayPhone(senderJid.split("@")[0]);
+        const text = (
+          msg.message?.conversation ||
+          msg.message?.extendedTextMessage?.text ||
+          ""
+        )
+          .trim()
+          .toUpperCase();
+
+        if (["BAJA", "STOP", "CANCELAR RECORDATORIOS"].includes(text)) {
+          if (!state.optOutPhones.includes(fromPhone)) {
+            state.optOutPhones.push(fromPhone);
+            saveState();
+          }
+          try {
+            await supabase
+              .from("appointments")
+              .update({ whatsapp_opt_in: false })
+              .eq("client_phone", fromPhone)
+              .eq("status", "confirmed");
+          } catch (err) {
+            console.warn("⚠️ Error actualizando opt-out en Supabase:", err?.message || err);
+          }
+          console.log(`🔕 Cliente ${fromPhone} solicitó BAJA de recordatorios.`);
+          try {
+            await enqueueWhatsAppSend({
+              phone: fromPhone,
+              text: "✅ Hemos desactivado los recordatorios automáticos por WhatsApp para tu número. ¡Gracias!",
+              meta: { clientName: "Baja automática", kind: "opt_out" },
+            });
+          } catch {}
+        }
+      }
+    });
+  } catch (err) {
+    console.error("⚠️ Error iniciando Baileys, reintentando en 5 segundos:", err?.message || err);
+    connectionStatus = "reconnecting";
+    scheduleWhatsAppReconnect(5000);
+  } finally {
+    startingWhatsApp = false;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -870,7 +1065,7 @@ const server = http.createServer(async (req, res) => {
     await clearCloudSession();
     connectionStatus = "qr";
     connectedPhone = null;
-    setTimeout(startWhatsApp, 1500);
+    scheduleWhatsAppReconnect(1500);
     return sendJson(res, 200, { ok: true });
   }
 
