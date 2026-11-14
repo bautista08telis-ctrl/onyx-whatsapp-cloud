@@ -977,8 +977,15 @@ function sendJson(res, status, data) {
 }
 
 function isAuthorized(req, url) {
-  if (!PANEL_PASSWORD) return true;
-  const parsedUrl = url || new URL(req.url || "/", `http://localhost:${PORT}`);
+  if (!PANEL_PASSWORD) return false;
+  let parsedUrl = url;
+  if (!parsedUrl) {
+    try {
+      parsedUrl = new URL(req.url || "/", `http://localhost:${PORT}`);
+    } catch {
+      return false;
+    }
+  }
   const headerVal = req.headers["x-panel-password"];
   const rawHeader = Array.isArray(headerVal) ? headerVal[0] : headerVal;
   const provided = String(rawHeader || parsedUrl.searchParams.get("key") || "").trim();
@@ -990,7 +997,14 @@ function isAuthorized(req, url) {
 }
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url || "/", `http://localhost:${PORT}`);
+  let url;
+  try {
+    url = new URL(req.url || "/", `http://localhost:${PORT}`);
+  } catch {
+    return sendJson(res, 400, { ok: false, error: "invalid_url" });
+  }
+
+  try {
 
   // Healthcheck público para mantener vivo el servidor en Render / Oracle / Railway
   if (req.method === "GET" && url.pathname === "/health") {
@@ -1149,6 +1163,12 @@ const server = http.createServer(async (req, res) => {
   }
 
   sendJson(res, 404, { error: "Not found" });
+  } catch (err) {
+    console.warn("⚠️ Error no controlado en servidor HTTP del bot:", err?.message || err);
+    if (!res.headersSent) {
+      sendJson(res, 500, { ok: false, error: "internal_error" });
+    }
+  }
 });
 
 // Inicialización completa
