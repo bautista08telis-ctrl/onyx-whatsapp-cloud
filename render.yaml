@@ -11,6 +11,6 @@ services:
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
       - key: PUBLIC_APP_URL
-        value: https://barberflow-weld.vercel.app
+        value: https://onyx-agenda-uy.vercel.app
       - key: PANEL_PASSWORD
         sync: false

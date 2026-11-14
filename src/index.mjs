@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
@@ -46,8 +47,12 @@ loadEnvFile();
 const PORT = Number(process.env.PORT || 3005);
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-const PUBLIC_APP_URL = process.env.PUBLIC_APP_URL || process.env.NEXT_PUBLIC_APP_URL || "https://barberflow-weld.vercel.app";
-const PANEL_PASSWORD = process.env.PANEL_PASSWORD || ""; // Opcional para proteger en la nube
+const PUBLIC_APP_URL = (
+  process.env.PUBLIC_APP_URL ||
+  process.env.NEXT_PUBLIC_APP_URL ||
+  "https://onyx-agenda-uy.vercel.app"
+).replace(/\/+$/, "");
+const PANEL_PASSWORD = (process.env.PANEL_PASSWORD || "").trim(); // Opcional para proteger en la nube
 const SELF_PING_URL = process.env.RENDER_EXTERNAL_URL || process.env.SELF_PING_URL || "";
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
@@ -971,9 +976,17 @@ function sendJson(res, status, data) {
   res.end(JSON.stringify(data));
 }
 
-function isAuthorized(req) {
-  // Panel de control libre sin contraseña para facilitar envíos manuales y control total
-  return true;
+function isAuthorized(req, url) {
+  if (!PANEL_PASSWORD) return true;
+  const parsedUrl = url || new URL(req.url || "/", `http://localhost:${PORT}`);
+  const headerVal = req.headers["x-panel-password"];
+  const rawHeader = Array.isArray(headerVal) ? headerVal[0] : headerVal;
+  const provided = String(rawHeader || parsedUrl.searchParams.get("key") || "").trim();
+  if (!provided) return false;
+  const expectedBuf = Buffer.from(PANEL_PASSWORD, "utf8");
+  const providedBuf = Buffer.from(provided, "utf8");
+  if (expectedBuf.length !== providedBuf.length) return false;
+  return crypto.timingSafeEqual(expectedBuf, providedBuf);
 }
 
 const server = http.createServer(async (req, res) => {
@@ -991,7 +1004,7 @@ const server = http.createServer(async (req, res) => {
     return res.end(html);
   }
 
-  if (!isAuthorized(req)) {
+  if (!isAuthorized(req, url)) {
     return sendJson(res, 401, { ok: false, error: "requires_password" });
   }
 

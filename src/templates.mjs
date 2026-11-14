@@ -59,7 +59,7 @@ export function formatMoney(amount, currency = "UYU") {
   }
 }
 
-export function buildMessage(kind, appointment, barber, appUrl = "https://barberflow-weld.vercel.app") {
+export function buildMessage(kind, appointment, barber, appUrl = "https://onyx-agenda-uy.vercel.app") {
   const tz = barber?.timezone || "America/Montevideo";
   const currency = barber?.currency || "UYU";
   const { dateStr, timeStr } = formatDateTime(appointment.start_at, tz);
@@ -70,7 +70,7 @@ export function buildMessage(kind, appointment, barber, appUrl = "https://barber
     : "";
   const addressLine = barber?.address ? `\n📍 *Dirección:* ${barber.address}` : "";
   const mapsLine = barber?.maps_url ? `\n🗺️ *Mapa:* ${barber.maps_url}` : "";
-  const cleanAppUrl = String(appUrl || "").replace(/\/$/, "");
+  const cleanAppUrl = String(appUrl || "https://onyx-agenda-uy.vercel.app").replace(/\/+$/, "");
   const manageUrl = appointment.token ? `${cleanAppUrl}/booking/${appointment.token}` : cleanAppUrl;
 
   if (kind === "reminder") {
@@ -137,9 +137,9 @@ export function buildMessage(kind, appointment, barber, appUrl = "https://barber
   );
 }
 
-export function buildWaitlistMessage(waitlistEntry, slotTimeStr, barber, appUrl = "https://barberflow-weld.vercel.app") {
+export function buildWaitlistMessage(waitlistEntry, slotTimeStr, barber, appUrl = "https://onyx-agenda-uy.vercel.app") {
   const shopName = barber?.name || "la Barbería";
-  const cleanAppUrl = String(appUrl || "").replace(/\/$/, "");
+  const cleanAppUrl = String(appUrl || "https://onyx-agenda-uy.vercel.app").replace(/\/+$/, "");
   return (
     `¡Hola *${waitlistEntry.client_name}*! ✨\n` +
     `Se acaba de liberar un lugar en *${shopName}* para el día *${waitlistEntry.date}*` +
